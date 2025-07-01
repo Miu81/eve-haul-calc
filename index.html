@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dacia Hauling Co. - EVE Online Haul Calculator</title>
+  <script>
+    // Configuration rates
+    const rates = {
+      BR: { hs: 1250000, ls: 3000000 },
+      Freighter: { hs: 1750000, ls: 4000000 },
+      JF: { baseJump: 200000000, fuelPerJump: 30000000, cynoCost: 5000000 },
+      DST: { hs: 100000000, ls: 150000000 }
+    };
+    const collateralMultipliers = (collateral) => {
+      if (collateral < 5e8) return 1;
+      if (collateral <= 2e9) return 1.5;
+      return 2;
+    };
+    const profitMargins = {
+      own: 1.5,
+      outsource: 1.25
+    };
+    async function calculate() {
+      const from = document.getElementById('from').value;
+      const to = document.getElementById('to').value;
+      const ship = document.getElementById('ship').value;
+      const collateral = parseFloat(document.getElementById('collateral').value) || 0;
+      const mode = document.getElementById('mode').value; // own or outsource
+      const urlFrom = encodeURIComponent(from);
+      const urlTo = encodeURIComponent(to);
+      // Fetch system IDs
+      const fetchId = async (name) => {
+        const res = await fetch(`https://esi.evetech.net/latest/search/?categories=solar_system&search=${name}&strict=true`);
+        const data = await res.json();
+        return data.solar_system && data.solar_system[0];
+      };
+      try {
+        const fromId = await fetchId(from);
+        const toId = await fetchId(to);
+        const routeRes = await fetch(`https://esi.evetech.net/latest/route/${fromId}/${toId}/?datasource=tranquility`);
+        const route = await routeRes.json();
+        const jumps = route.length;
+        // Determine zone type by first jump (HS vs LS)
+        let zone = 'hs';
+        // If any system in route is low-sec or null-sec, treat as ls
+        // For simplicity assume route all hs
+        if (ship === 'JF') {
+          var baseCost = rates.JF.baseJump * jumps;
+          var extraFuel = rates.JF.fuelPerJump * jumps;
+          var extraCyno = rates.JF.cynoCost;
+          baseCost = baseCost;
+          var costBeforeProfit = baseCost + extraFuel + extraCyno;
+        } else {
+          const rate = jumps > 0 ? (zone === 'hs' ? rates[ship].hs : rates[ship].ls) : 0;
+          var costBeforeProfit = rate * jumps * collateralMultipliers(collateral);
+        }
+        const totalCost = Math.round(costBeforeProfit * profitMargins[mode]);
+        document.getElementById('output').textContent = 
+          `Route: ${from} → ${to} (${jumps} jumps)\n` +
+          `Ship: ${ship}\n` +
+          `Collateral: ${collateral.toLocaleString()} ISK\n` +
+          `Mode: ${mode === 'own'? 'Dacia Hauling': 'Outsourced'}\n` +
+          `Estimated Cost: ${totalCost.toLocaleString()} ISK`;
+      } catch (err) {
+        document.getElementById('output').textContent = 'Error fetching route. Check system names.';
+      }
+    }
+  </script>
+</head>
+<body class="p-4">
+  <h1 class="text-xl font-bold mb-4">Dacia Hauling Co. – EVE Haul Calculator</h1>
+  <div class="space-y-2">
+    <input id="from" placeholder="From System" class="border p-1 w-full" />
+    <input id="to" placeholder="To System" class="border p-1 w-full" />
+    <select id="ship" class="border p-1 w-full">
+      <option value="BR">Blockade Runner (BR)</option>
+      <option value="Freighter">Freighter</option>
+      <option value="JF">Jump Freighter (JF)</option>
+      <option value="DST">Deep Space Transport (DST)</option>
+    </select>
+    <input id="collateral" placeholder="Collateral (ISK)" type="number" class="border p-1 w-full" />
+    <select id="mode" class="border p-1 w-full">
+      <option value="own">Dacia Hauling (50% profit)</option>
+      <option value="outsource">Outsourced (25% profit)</option>
+    </select>
+    <button onclick="calculate()" class="mt-2 px-4 py-2 bg-blue-600 text-white rounded">Calculate Cost</button>
+  </div>
+  <pre id="output" class="mt-4 p-2 border bg-gray-100"></pre>
+</body>
+</html>
