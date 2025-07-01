@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Dacia Hauling Co. - EVE Online Haul Calculator</title>
+  <title>Dacia Hauling Co. - EVE Haul Calculator</title>
   <script>
     // Configuration rates
     const rates = {
@@ -12,58 +12,79 @@
       JF: { baseJump: 200000000, fuelPerJump: 30000000, cynoCost: 5000000 },
       DST: { hs: 100000000, ls: 150000000 }
     };
-    const collateralMultipliers = (collateral) => {
+    const collateralMultiplier = (collateral) => {
       if (collateral < 5e8) return 1;
       if (collateral <= 2e9) return 1.5;
       return 2;
     };
     const profitMargins = {
-      own: 1.5,
-      outsource: 1.25
+      standard: 1.5,  // 50% margin internally
+      express: 1.25   // 25% margin for outsourced
     };
+
     async function calculate() {
-      const from = document.getElementById('from').value;
-      const to = document.getElementById('to').value;
+      const from = document.getElementById('from').value.trim();
+      const to = document.getElementById('to').value.trim();
       const ship = document.getElementById('ship').value;
       const collateral = parseFloat(document.getElementById('collateral').value) || 0;
-      const mode = document.getElementById('mode').value; // own or outsource
-      const urlFrom = encodeURIComponent(from);
-      const urlTo = encodeURIComponent(to);
-      // Fetch system IDs
+      const deliveryType = document.getElementById('delivery').value; // standard or express
+      const output = document.getElementById('output');
+      output.textContent = 'Calculating...';
+
+      // Helper: fetch system ID (non-strict search)
       const fetchId = async (name) => {
-        const res = await fetch(`https://esi.evetech.net/latest/search/?categories=solar_system&search=${name}&strict=true`);
+        const res = await fetch(
+          `https://esi.evetech.net/latest/search/?search=${encodeURIComponent(name)}&categories=solar_system&language=en`
+        );
         const data = await res.json();
         return data.solar_system && data.solar_system[0];
       };
+
       try {
         const fromId = await fetchId(from);
         const toId = await fetchId(to);
-        const routeRes = await fetch(`https://esi.evetech.net/latest/route/${fromId}/${toId}/?datasource=tranquility`);
+        if (!fromId || !toId) throw new Error();
+        const routeRes = await fetch(
+          `https://esi.evetech.net/latest/route/${fromId}/${toId}/?datasource=tranquility`);
+        if (!routeRes.ok) throw new Error();
         const route = await routeRes.json();
         const jumps = route.length;
-        // Determine zone type by first jump (HS vs LS)
-        let zone = 'hs';
-        // If any system in route is low-sec or null-sec, treat as ls
-        // For simplicity assume route all hs
-        if (ship === 'JF') {
-          var baseCost = rates.JF.baseJump * jumps;
-          var extraFuel = rates.JF.fuelPerJump * jumps;
-          var extraCyno = rates.JF.cynoCost;
-          baseCost = baseCost;
-          var costBeforeProfit = baseCost + extraFuel + extraCyno;
-        } else {
-          const rate = jumps > 0 ? (zone === 'hs' ? rates[ship].hs : rates[ship].ls) : 0;
-          var costBeforeProfit = rate * jumps * collateralMultipliers(collateral);
+
+        // Validate volume
+        const volume = parseFloat(document.getElementById('volume').value) || 0;
+        const volumeLimits = { BR:10000, Freighter:360000, JF:320000, DST:62500 };
+        if (volume > volumeLimits[ship]) {
+          output.textContent = `Error: ${ship} capacity is ${volumeLimits[ship]} m³.`;
+          return;
         }
-        const totalCost = Math.round(costBeforeProfit * profitMargins[mode]);
-        document.getElementById('output').textContent = 
+
+        // Calculate base cost
+        let costBeforeMargin;
+        if (ship === 'JF') {
+          const base = rates.JF.baseJump * jumps;
+          const fuel = rates.JF.fuelPerJump * jumps;
+          const cyno = rates.JF.cynoCost;
+          costBeforeMargin = base + fuel + cyno;
+        } else {
+          // determine zone by first system of route (simplified)
+          const zone = 'hs';
+          const rate = zone === 'hs' ? rates[ship].hs : rates[ship].ls;
+          costBeforeMargin = rate * jumps * collateralMultiplier(collateral);
+        }
+
+        // Apply profit margin internally
+        const margin = profitMargins[deliveryType];
+        const totalCost = Math.round(costBeforeMargin * margin);
+
+        // Display result without revealing margins
+        output.textContent =
           `Route: ${from} → ${to} (${jumps} jumps)\n` +
           `Ship: ${ship}\n` +
           `Collateral: ${collateral.toLocaleString()} ISK\n` +
-          `Mode: ${mode === 'own'? 'Dacia Hauling': 'Outsourced'}\n` +
+          `Delivery: ${deliveryType === 'standard' ? 'Standard' : 'Express'}\n` +
           `Estimated Cost: ${totalCost.toLocaleString()} ISK`;
       } catch (err) {
-        document.getElementById('output').textContent = 'Error fetching route. Check system names.';
+        output.textContent = 'Unable to calculate route. Please check system names.';
       }
     }
   </script>
@@ -79,10 +100,11 @@
       <option value="JF">Jump Freighter (JF)</option>
       <option value="DST">Deep Space Transport (DST)</option>
     </select>
+    <input id="volume" placeholder="Volume (m³)" type="number" class="border p-1 w-full" />
     <input id="collateral" placeholder="Collateral (ISK)" type="number" class="border p-1 w-full" />
-    <select id="mode" class="border p-1 w-full">
-      <option value="own">Dacia Hauling (50% profit)</option>
-      <option value="outsource">Outsourced (25% profit)</option>
+    <select id="delivery" class="border p-1 w-full">
+      <option value="standard">Standard Delivery</option>
+      <option value="express">Express Delivery</option>
     </select>
     <button onclick="calculate()" class="mt-2 px-4 py-2 bg-blue-600 text-white rounded">Calculate Cost</button>
   </div>
