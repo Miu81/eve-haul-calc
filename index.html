@@ -5,86 +5,97 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Dacia Hauling Co. - EVE Haul Calculator</title>
   <script>
-    // Configuration rates
+    // ESI helpers and system data fetch
+    const esiSearch = name => fetch(
+      `https://esi.evetech.net/latest/search/?search=${encodeURIComponent(name)}&categories=solar_system&language=en`
+    ).then(r => r.json()).then(d => d.solar_system && d.solar_system[0]);
+    const esiRoute = (fromId, toId) => fetch(
+      `https://esi.evetech.net/latest/route/${fromId}/${toId}/?datasource=tranquility&flag=shortest`
+    ).then(r => r.json());
+    const esiSystem = id => fetch(
+      `https://esi.evetech.net/latest/universe/systems/${id}/?datasource=tranquility`
+    ).then(r => r.json());
+
+    // Tariff configuration
     const rates = {
       BR: { hs: 1250000, ls: 3000000 },
       Freighter: { hs: 1750000, ls: 4000000 },
       JF: { baseJump: 200000000, fuelPerJump: 30000000, cynoCost: 5000000 },
       DST: { hs: 100000000, ls: 150000000 }
     };
-    const collateralMultiplier = (collateral) => {
-      if (collateral < 5e8) return 1;
-      if (collateral <= 2e9) return 1.5;
-      return 2;
-    };
-    const profitMargins = {
-      standard: 1.5,  // 50% margin internally
-      express: 1.25   // 25% margin for outsourced
-    };
+    const collateralMultiplier = c => c < 5e8 ? 1 : c <= 2e9 ? 1.5 : 2;
+    const profitMargins = { standard: 1.5, express: 1.25 };
+    let systemsData = [];
+
+    // Load full systems list for autocomplete
+    fetch('https://<your-username>.github.io/EVE-Systems/systems.json')
+      .then(r => r.json())
+      .then(data => {
+        systemsData = data;
+        const dl = document.getElementById('systemsList');
+        data.forEach(sys => {
+          const opt = document.createElement('option');
+          opt.value = sys.name;
+          dl.appendChild(opt);
+        });
+      })
+      .catch(() => console.warn('Could not load systems.json'));
 
     async function calculate() {
       const from = document.getElementById('from').value.trim();
       const to = document.getElementById('to').value.trim();
       const ship = document.getElementById('ship').value;
+      const volume = parseFloat(document.getElementById('volume').value) || 0;
       const collateral = parseFloat(document.getElementById('collateral').value) || 0;
-      const deliveryType = document.getElementById('delivery').value; // standard or express
-      const output = document.getElementById('output');
-      output.textContent = 'Calculating...';
-
-      // Helper: fetch system ID (non-strict search)
-      const fetchId = async (name) => {
-        const res = await fetch(
-          `https://esi.evetech.net/latest/search/?search=${encodeURIComponent(name)}&categories=solar_system&language=en`
-        );
-        const data = await res.json();
-        return data.solar_system && data.solar_system[0];
-      };
+      const delivery = document.getElementById('delivery').value;
+      const out = document.getElementById('output');
+      out.textContent = 'Calculating...';
 
       try {
-        const fromId = await fetchId(from);
-        const toId = await fetchId(to);
-        if (!fromId || !toId) throw new Error();
-        const routeRes = await fetch(
-          `https://esi.evetech.net/latest/route/${fromId}/${toId}/?datasource=tranquility`);
-        if (!routeRes.ok) throw new Error();
-        const route = await routeRes.json();
+        // Lookup system IDs
+        const [fromId, toId] = await Promise.all([esiSearch(from), esiSearch(to)]);
+        if (!fromId || !toId) throw 'Invalid system name';
+        // Get route
+        const route = await esiRoute(fromId, toId);
         const jumps = route.length;
 
-        // Validate volume
-        const volume = parseFloat(document.getElementById('volume').value) || 0;
-        const volumeLimits = { BR:10000, Freighter:360000, JF:320000, DST:62500 };
-        if (volume > volumeLimits[ship]) {
-          output.textContent = `Error: ${ship} capacity is ${volumeLimits[ship]} m³.`;
+        // Distance calculation
+        const [{ position: p1 }, { position: p2 }] = await Promise.all([
+          esiSystem(fromId), esiSystem(toId)
+        ]);
+        const distAU = Math.sqrt(
+          (p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2 + (p1.z - p2.z) ** 2
+        ) / 1e3;
+
+        // Volume check
+        const limits = { BR: 10000, Freighter: 360000, JF: 320000, DST: 62500 };
+        if (volume > limits[ship]) {
+          out.textContent = `Error: ${ship} capacity is ${limits[ship]} m³.`;
           return;
         }
 
-        // Calculate base cost
-        let costBeforeMargin;
+        // Base cost
+        let baseCost;
         if (ship === 'JF') {
-          const base = rates.JF.baseJump * jumps;
-          const fuel = rates.JF.fuelPerJump * jumps;
-          const cyno = rates.JF.cynoCost;
-          costBeforeMargin = base + fuel + cyno;
+          baseCost = rates.JF.baseJump * jumps
+            + rates.JF.fuelPerJump * jumps
+            + rates.JF.cynoCost;
         } else {
-          // determine zone by first system of route (simplified)
-          const zone = 'hs';
-          const rate = zone === 'hs' ? rates[ship].hs : rates[ship].ls;
-          costBeforeMargin = rate * jumps * collateralMultiplier(collateral);
+          const zoneRate = rates[ship].hs; // Freighter/DST use HS only
+          baseCost = zoneRate * jumps * collateralMultiplier(collateral);
         }
 
-        // Apply profit margin internally
-        const margin = profitMargins[deliveryType];
-        const totalCost = Math.round(costBeforeMargin * margin);
+        // Apply margin
+        const totalCost = Math.round(baseCost * profitMargins[delivery]);
 
-        // Display result without revealing margins
-        output.textContent =
-          `Route: ${from} → ${to} (${jumps} jumps)\n` +
-          `Ship: ${ship}\n` +
-          `Collateral: ${collateral.toLocaleString()} ISK\n` +
-          `Delivery: ${deliveryType === 'standard' ? 'Standard' : 'Express'}\n` +
+        // Display without margin breakdown
+        out.textContent =
+          `Route: ${from} → ${to} (${jumps} jumps, ${distAU.toFixed(1)} AU)\n` +
+          `Ship: ${ship} | Volume: ${volume} m³ | Collateral: ${collateral.toLocaleString()} ISK\n` +
+          `Delivery: ${delivery === 'standard' ? 'Standard' : 'Express'}\n` +
           `Estimated Cost: ${totalCost.toLocaleString()} ISK`;
       } catch (err) {
-        output.textContent = 'Unable to calculate route. Please check system names.';
+        out.textContent = 'Unable to calculate route. Please check system names.';
       }
     }
   </script>
@@ -92,8 +103,9 @@
 <body class="p-4">
   <h1 class="text-xl font-bold mb-4">Dacia Hauling Co. – EVE Haul Calculator</h1>
   <div class="space-y-2">
-    <input id="from" placeholder="From System" class="border p-1 w-full" />
-    <input id="to" placeholder="To System" class="border p-1 w-full" />
+    <input list="systemsList" id="from" placeholder="From System" class="border p-1 w-full" />
+    <input list="systemsList" id="to" placeholder="To System" class="border p-1 w-full" />
+    <datalist id="systemsList"></datalist>
     <select id="ship" class="border p-1 w-full">
       <option value="BR">Blockade Runner (BR)</option>
       <option value="Freighter">Freighter</option>
